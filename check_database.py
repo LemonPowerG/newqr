@@ -1,71 +1,68 @@
-from app import get_db_connection
+import os
+import psycopg2
+from urllib.parse import urlparse
 from werkzeug.security import generate_password_hash
+
+def get_db_connection():
+    if 'DATABASE_URL' in os.environ:
+        url = urlparse(os.environ['DATABASE_URL'])
+        return psycopg2.connect(
+            host=url.hostname,
+            user=url.username,
+            password=url.password,
+            database=url.path[1:],
+            port=url.port
+        )
+    else:
+        return psycopg2.connect(
+            host='localhost',
+            user='postgres',
+            password='your-password',
+            database='feedback_system'
+        )
 
 def check_database():
     conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        with conn.cursor() as cursor:
-            # Drop existing tables if they exist
-            cursor.execute('DROP TABLE IF EXISTS feedback')
-            cursor.execute('DROP TABLE IF EXISTS branch')
-            cursor.execute('DROP TABLE IF EXISTS user')
-            
-            # Create users table
-            cursor.execute('''
-                CREATE TABLE user (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    username VARCHAR(80) UNIQUE NOT NULL,
-                    password_hash VARCHAR(120) NOT NULL,
-                    is_admin BOOLEAN DEFAULT FALSE
-                )
-            ''')
-            
-            # Create branches table
-            cursor.execute('''
-                CREATE TABLE branch (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    name VARCHAR(100) NOT NULL,
-                    location VARCHAR(200) NOT NULL,
-                    qr_code_path VARCHAR(200)
-                )
-            ''')
-            
-            # Create feedback table
-            cursor.execute('''
-                CREATE TABLE feedback (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    branch_id INT NOT NULL,
-                    rating INT NOT NULL,
-                    comment TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    FOREIGN KEY (branch_id) REFERENCES branch(id)
-                )
-            ''')
-            
-            # Create admin user
-            password_hash = generate_password_hash('admin123')
-            cursor.execute(
-                'INSERT INTO user (username, password_hash, is_admin) VALUES (%s, %s, %s)',
-                ('admin', password_hash, True)
-            )
-            
-            conn.commit()
-            print("მონაცემთა ბაზა წარმატებით შეიქმნა!")
-            print("ადმინისტრატორის მონაცემები:")
-            print("მომხმარებელი: admin")
-            print("პაროლი: admin123")
-            
-            # Verify admin user
-            cursor.execute('SELECT * FROM user WHERE username = %s', ('admin',))
-            admin = cursor.fetchone()
-            if admin:
-                print("\nადმინისტრატორის მონაცემები ბაზაში:")
-                print(f"ID: {admin['id']}")
-                print(f"Username: {admin['username']}")
-                print(f"Is Admin: {admin['is_admin']}")
-            else:
-                print("\nშეცდომა: ადმინისტრატორი ვერ მოიძებნა ბაზაში!")
+        # Check users table
+        cur.execute('SELECT COUNT(*) FROM users')
+        user_count = cur.fetchone()[0]
+        print(f'Users table: {user_count} records')
+        
+        # Check branches table
+        cur.execute('SELECT COUNT(*) FROM branches')
+        branch_count = cur.fetchone()[0]
+        print(f'Branches table: {branch_count} records')
+        
+        # Check feedback table
+        cur.execute('SELECT COUNT(*) FROM feedback')
+        feedback_count = cur.fetchone()[0]
+        print(f'Feedback table: {feedback_count} records')
+        
+        # Get feedback statistics
+        cur.execute('''
+            SELECT 
+                AVG(service_rating) as avg_service,
+                AVG(cleanliness_rating) as avg_cleanliness,
+                AVG(staff_rating) as avg_staff,
+                AVG(waiting_time_rating) as avg_waiting,
+                AVG(overall_rating) as avg_overall
+            FROM feedback
+        ''')
+        stats = cur.fetchone()
+        print('\nAverage Ratings:')
+        print(f'Service: {stats[0]:.2f}')
+        print(f'Cleanliness: {stats[1]:.2f}')
+        print(f'Staff: {stats[2]:.2f}')
+        print(f'Waiting Time: {stats[3]:.2f}')
+        print(f'Overall: {stats[4]:.2f}')
+        
+    except psycopg2.Error as e:
+        print(f'Database error: {e}')
     finally:
+        cur.close()
         conn.close()
 
 if __name__ == '__main__':

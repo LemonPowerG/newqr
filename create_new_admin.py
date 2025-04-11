@@ -1,40 +1,54 @@
-from app import get_db_connection
-from werkzeug.security import generate_password_hash
+import os
+import psycopg2
+import hashlib
+from urllib.parse import urlparse
 
-def create_new_admin():
+def get_db_connection():
+    if 'DATABASE_URL' in os.environ:
+        url = urlparse(os.environ['DATABASE_URL'])
+        return psycopg2.connect(
+            host=url.hostname,
+            user=url.username,
+            password=url.password,
+            database=url.path[1:],
+            port=url.port
+        )
+    else:
+        return psycopg2.connect(
+            host='localhost',
+            user='postgres',
+            password='your-password',
+            database='feedback_system'
+        )
+
+def create_new_admin(username, password):
     conn = get_db_connection()
+    cur = conn.cursor()
+    
     try:
-        with conn.cursor() as cursor:
-            # Drop existing admin
-            cursor.execute('DELETE FROM user WHERE username = %s', ('admin',))
-            
-            # Create new admin with a simple password
-            new_password = '123456'  # Simple password for testing
-            password_hash = generate_password_hash(new_password)
-            
-            # Print the password hash for verification
-            print(f"Password Hash: {password_hash}")
-            
-            cursor.execute(
-                'INSERT INTO user (username, password_hash, is_admin) VALUES (%s, %s, %s)',
-                ('admin', password_hash, True)
-            )
-            conn.commit()
-            
-            # Verify the user was created
-            cursor.execute('SELECT * FROM user WHERE username = %s', ('admin',))
-            admin = cursor.fetchone()
-            
-            if admin:
-                print("\nადმინისტრატორი წარმატებით შეიქმნა!")
-                print(f"მომხმარებელი: admin")
-                print(f"პაროლი: {new_password}")
-                print(f"ID: {admin['id']}")
-                print(f"Is Admin: {admin['is_admin']}")
-            else:
-                print("\nშეცდომა: ადმინისტრატორი ვერ შეიქმნა!")
+        # Check if user already exists
+        cur.execute('SELECT * FROM users WHERE username = %s', (username,))
+        existing_user = cur.fetchone()
+        
+        if existing_user:
+            print(f'მომხმარებელი ამ სახელით უკვე არსებობს: {username}')
+            return
+        
+        # Hash password
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        # Create new admin user
+        cur.execute('INSERT INTO users (username, password, is_admin) VALUES (%s, %s, %s)',
+                   (username, password_hash, True))
+        conn.commit()
+        print(f'ახალი ადმინისტრატორი წარმატებით შეიქმნა: {username}')
+    except psycopg2.Error as e:
+        print(f'Database error: {e}')
     finally:
+        cur.close()
         conn.close()
 
 if __name__ == '__main__':
-    create_new_admin() 
+    username = input('შეიყვანეთ ახალი მომხმარებლის სახელი: ')
+    password = input('შეიყვანეთ პაროლი: ')
+    create_new_admin(username, password) 

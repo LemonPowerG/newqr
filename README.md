@@ -1,71 +1,93 @@
-# უკუკავშირის სისტემა QR კოდებით
+# QR Code Feedback System
 
-ეს არის ვებ აპლიკაცია, რომელიც საშუალებას გაძლევთ შექმნათ და მართოთ უკუკავშირის სისტემა QR კოდების გამოყენებით. სისტემა განკუთვნილია მიკროსაფინანსო ორგანიზაციებისთვის, რომლებსაც სურთ მიიღონ უკუკავშირი მომხმარებლებისგან სხვადასხვა ფილიალებში.
+A modern feedback system that uses QR codes to collect customer feedback for different branches.
 
-## ფუნქციონალი
+## Features
 
-- QR კოდების გენერაცია თითოეული ფილიალისთვის
-- უკუკავშირის ფორმა მომხმარებლებისთვის
-- ადმინისტრატორის პანელი ფილიალების მართვისთვის
-- უკუკავშირების სტატისტიკა და ანალიზი
-- მოქნილი და მობილურად მორგებული ინტერფეისი
+- 10-point rating scale (1-10) with color coding:
+  - 1-6: Red (Negative)
+  - 7-8: Yellow (Neutral)
+  - 9-10: Green (Positive)
+- Feedback categories:
+  - Service Rating
+  - Cleanliness Rating
+  - Staff Rating
+  - Waiting Time Rating
+  - Overall Rating
+- Admin panel for viewing feedback
+- QR code generation for each branch
+- Modern, responsive UI with gradients and animations
+- Georgian language interface
 
-## ინსტალაცია
+## Setup
 
-1. დააკლონირეთ რეპოზიტორია:
-```bash
-git clone [repository-url]
-cd feedback-system
+1. Clone the repository
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+3. Set up PostgreSQL database:
+   ```bash
+   createdb feedback_system
+   ```
+4. Create a `.env` file with the following variables:
+   ```
+   FLASK_ENV=development
+   SECRET_KEY=your-secret-key
+   DATABASE_URL=postgresql://username:password@localhost:5432/feedback_system
+   ```
+5. Run the application:
+   ```bash
+   python app.py
+   ```
+
+## Deployment
+
+The application is configured for deployment on Render.com:
+
+1. Create a new Web Service on Render
+2. Connect your GitHub repository
+3. Add the following environment variables:
+   - `FLASK_ENV`: production
+   - `SECRET_KEY`: (generate a secure key)
+   - `DATABASE_URL`: (will be automatically set by Render's PostgreSQL add-on)
+
+## Database Schema
+
+### Users Table
+```sql
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    username VARCHAR(50) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    is_admin BOOLEAN DEFAULT FALSE
+);
 ```
 
-2. შექმენით ვირტუალური გარემო და გააქტიურეთ:
-```bash
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-venv\Scripts\activate     # Windows
+### Branches Table
+```sql
+CREATE TABLE branches (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    location VARCHAR(255) NOT NULL
+);
 ```
 
-3. დააინსტალირეთ დამოკიდებულებები:
-```bash
-pip install -r requirements.txt
+### Feedback Table
+```sql
+CREATE TABLE feedback (
+    id SERIAL PRIMARY KEY,
+    branch_id INTEGER REFERENCES branches(id),
+    service_rating INTEGER NOT NULL,
+    cleanliness_rating INTEGER NOT NULL,
+    staff_rating INTEGER NOT NULL,
+    waiting_time_rating INTEGER NOT NULL,
+    overall_rating INTEGER NOT NULL,
+    comment TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 ```
 
-4. შექმენით ადმინისტრატორის მომხმარებელი:
-```python
-from app import app, db, User
-from werkzeug.security import generate_password_hash
+## License
 
-with app.app_context():
-    admin = User(
-        username='admin',
-        password_hash=generate_password_hash('your-password'),
-        is_admin=True
-    )
-    db.session.add(admin)
-    db.session.commit()
-```
-
-5. გაუშვით აპლიკაცია:
-```bash
-python app.py
-```
-
-## გამოყენება
-
-1. შედით ადმინისტრატორის პანელზე (`/admin`)
-2. დაამატეთ ფილიალები
-3. ჩამოტვირთეთ QR კოდები და განათავსეთ ფილიალებში
-4. მომხმარებლები შეძლებენ QR კოდის სკანირებას და მისცემენ უკუკავშირს
-
-## ტექნოლოგიები
-
-- Python 3.8+
-- Flask
-- SQLAlchemy
-- QR Code
-- Bootstrap 5
-- Font Awesome
-
-## ლიცენზია
-
-MIT License 
+MIT 

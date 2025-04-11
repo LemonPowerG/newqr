@@ -12,4 +12,12 @@ services:
       - key: SECRET_KEY
         generateValue: true
       - key: DATABASE_URL
-        sync: false 
+        fromDatabase:
+          name: qr-feedback-db
+          property: connectionString
+
+databases:
+  - name: qr-feedback-db
+    databaseName: feedback_system
+    user: feedback_user
+    plan: free 

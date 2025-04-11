@@ -2,36 +2,32 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 import qrcode
 import os
 from datetime import datetime
-import pymysql
+import psycopg2
 from functools import wraps
 import hashlib
 from urllib.parse import urlparse
-
-# Use PyMySQL instead of mysqlclient
-pymysql.install_as_MySQLdb()
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'your-secret-key-here')
 app.config['PERMANENT_SESSION_LIFETIME'] = 1800  # 30 minutes session lifetime
 
-# MySQL connection configuration
+# Database connection configuration
 def get_db_connection():
     if 'DATABASE_URL' in os.environ:
         url = urlparse(os.environ['DATABASE_URL'])
-        return pymysql.connect(
+        return psycopg2.connect(
             host=url.hostname,
             user=url.username,
             password=url.password,
             database=url.path[1:],
-            cursorclass=pymysql.cursors.DictCursor
+            port=url.port
         )
     else:
-        return pymysql.connect(
+        return psycopg2.connect(
             host='localhost',
-            user='root',
-            password='',
-            database='feedback_system',
-            cursorclass=pymysql.cursors.DictCursor
+            user='postgres',
+            password='your-password',
+            database='feedback_system'
         )
 
 # Login decorator
@@ -57,6 +53,56 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+# Initialize database tables
+def init_db():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    
+    try:
+        # Create users table
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username VARCHAR(50) UNIQUE NOT NULL,
+                password VARCHAR(255) NOT NULL,
+                is_admin BOOLEAN DEFAULT FALSE
+            )
+        ''')
+        
+        # Create branches table
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS branches (
+                id SERIAL PRIMARY KEY,
+                name VARCHAR(100) NOT NULL,
+                location VARCHAR(255) NOT NULL
+            )
+        ''')
+        
+        # Create feedback table
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS feedback (
+                id SERIAL PRIMARY KEY,
+                branch_id INTEGER REFERENCES branches(id),
+                service_rating INTEGER NOT NULL,
+                cleanliness_rating INTEGER NOT NULL,
+                staff_rating INTEGER NOT NULL,
+                waiting_time_rating INTEGER NOT NULL,
+                overall_rating INTEGER NOT NULL,
+                comment TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+    except psycopg2.Error as e:
+        print(f'Database error: {e}')
+    finally:
+        cur.close()
+        conn.close()
+
+# Initialize database on startup
+init_db()
+
 # Routes
 @app.route('/')
 def index():
@@ -64,52 +110,26 @@ def index():
 
 @app.route('/feedback/<int:branch_id>', methods=['GET', 'POST'])
 def feedback(branch_id):
-    conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            # Get branch information
-            cursor.execute('SELECT * FROM branch WHERE id = %s', (branch_id,))
-            branch = cursor.fetchone()
-            
-            if not branch:
-                flash('ფილიალი ვერ მოიძებნა', 'error')
-                return redirect(url_for('index'))
-            
-            if request.method == 'POST':
-                # Get all ratings
-                service_rating = request.form.get('service_rating')
-                cleanliness_rating = request.form.get('cleanliness_rating')
-                staff_rating = request.form.get('staff_rating')
-                waiting_time_rating = request.form.get('waiting_time_rating')
-                overall_rating = request.form.get('overall_rating')
-                comment = request.form.get('comment')
-                
-                # Validate ratings
-                if not all([service_rating, cleanliness_rating, staff_rating, 
-                          waiting_time_rating, overall_rating]):
-                    flash('გთხოვთ შეავსოთ ყველა შეფასება', 'error')
-                    return render_template('feedback.html', branch=branch)
-                
-                # Insert feedback
-                cursor.execute('''
-                    INSERT INTO feedback (
-                        branch_id, service_rating, cleanliness_rating, 
-                        staff_rating, waiting_time_rating, overall_rating, 
-                        comment, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ''', (
-                    branch_id, service_rating, cleanliness_rating,
-                    staff_rating, waiting_time_rating, overall_rating,
-                    comment, datetime.utcnow()
-                ))
-                conn.commit()
-                
-                flash('მადლობა თქვენი უკუკავშირისთვის!', 'success')
-                return redirect(url_for('thank_you'))
-            
-            return render_template('feedback.html', branch=branch)
-    finally:
+    if request.method == 'POST':
+        service_rating = request.form.get('service_rating')
+        cleanliness_rating = request.form.get('cleanliness_rating')
+        staff_rating = request.form.get('staff_rating')
+        waiting_time_rating = request.form.get('waiting_time_rating')
+        overall_rating = request.form.get('overall_rating')
+        comment = request.form.get('comment')
+
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute(
+            'INSERT INTO feedback (branch_id, service_rating, cleanliness_rating, staff_rating, waiting_time_rating, overall_rating, comment) VALUES (%s, %s, %s, %s, %s, %s, %s)',
+            (branch_id, service_rating, cleanliness_rating, staff_rating, waiting_time_rating, overall_rating, comment)
+        )
+        conn.commit()
+        cur.close()
         conn.close()
+        return redirect(url_for('thank_you'))
+
+    return render_template('feedback.html', branch_id=branch_id)
 
 @app.route('/thank-you')
 def thank_you():
@@ -118,45 +138,33 @@ def thank_you():
 @app.route('/admin')
 @admin_required
 def admin():
-    page = request.args.get('page', 1, type=int)
-    search_query = request.args.get('search', '')
-    per_page = 10  # Number of branches per page
-    
     conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            # Get total count for pagination
-            if search_query:
-                cursor.execute('SELECT COUNT(*) as total FROM branch WHERE name LIKE %s OR location LIKE %s',
-                             (f'%{search_query}%', f'%{search_query}%'))
-            else:
-                cursor.execute('SELECT COUNT(*) as total FROM branch')
-            total = cursor.fetchone()['total']
-            
-            # Calculate pagination
-            total_pages = (total + per_page - 1) // per_page
-            offset = (page - 1) * per_page
-            
-            # Get branches with pagination and search
-            if search_query:
-                cursor.execute('''
-                    SELECT * FROM branch 
-                    WHERE name LIKE %s OR location LIKE %s 
-                    ORDER BY name 
-                    LIMIT %s OFFSET %s
-                ''', (f'%{search_query}%', f'%{search_query}%', per_page, offset))
-            else:
-                cursor.execute('SELECT * FROM branch ORDER BY name LIMIT %s OFFSET %s',
-                             (per_page, offset))
-            branches = cursor.fetchall()
-            
-            return render_template('admin/dashboard.html',
-                                branches=branches,
-                                page=page,
-                                total_pages=total_pages,
-                                search_query=search_query)
-    finally:
-        conn.close()
+    cur = conn.cursor()
+    
+    # Get all branches
+    cur.execute('SELECT * FROM branches ORDER BY id DESC')
+    branches = cur.fetchall()
+    
+    # Get statistics for each branch
+    for branch in branches:
+        cur.execute('''
+            SELECT 
+                COUNT(*) as total_feedback,
+                AVG(service_rating) as avg_service,
+                AVG(cleanliness_rating) as avg_cleanliness,
+                AVG(staff_rating) as avg_staff,
+                AVG(waiting_time_rating) as avg_waiting,
+                AVG(overall_rating) as avg_overall
+            FROM feedback 
+            WHERE branch_id = %s
+        ''', (branch[0],))  # id is at index 0
+        stats = cur.fetchone()
+        branch['stats'] = stats
+    
+    cur.close()
+    conn.close()
+    
+    return render_template('admin/dashboard.html', branches=branches)
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def login():
@@ -164,41 +172,20 @@ def login():
         username = request.form.get('username')
         password = request.form.get('password')
         
-        print(f"Login attempt - Username: {username}")  # Debug info
-        
         conn = get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute('SELECT * FROM user WHERE username = %s', (username,))
-                user = cursor.fetchone()
-                
-                print(f"User found in database: {user is not None}")  # Debug info
-                
-                if user:
-                    print(f"User data - ID: {user['id']}, Is Admin: {user['is_admin']}")  # Debug info
-                    # Use MD5 hash for password verification
-                    password_hash = hashlib.md5(password.encode()).hexdigest()
-                    password_valid = (password_hash == user['password_hash'])
-                    print(f"Password valid: {password_valid}")  # Debug info
-                    print(f"Input hash: {password_hash}")  # Debug info
-                    print(f"Stored hash: {user['password_hash']}")  # Debug info
-                    
-                    if password_valid:
-                        session['user_id'] = user['id']
-                        session['username'] = user['username']
-                        session['is_admin'] = user['is_admin']
-                        session.permanent = True
-                        print("Login successful, redirecting to admin")  # Debug info
-                        return redirect(url_for('admin'))
-                    else:
-                        print("Invalid password")  # Debug info
-                else:
-                    print("User not found")  # Debug info
-                
-                flash('არასწორი მომხმარებელი ან პაროლი', 'error')
-        finally:
-            conn.close()
-            
+        cur = conn.cursor()
+        cur.execute('SELECT * FROM users WHERE username = %s', (username,))
+        user = cur.fetchone()
+        cur.close()
+        conn.close()
+        
+        if user and hashlib.sha256(password.encode()).hexdigest() == user[2]:  # password is at index 2
+            session['user_id'] = user[0]  # id is at index 0
+            session['is_admin'] = user[3]  # is_admin is at index 3
+            return redirect(url_for('admin'))
+        else:
+            flash('არასწორი მომხმარებელი ან პაროლი', 'error')
+    
     return render_template('admin/login.html')
 
 @app.route('/admin/logout')
@@ -214,57 +201,26 @@ def add_branch():
         location = request.form.get('location')
         
         conn = get_db_connection()
-        try:
-            with conn.cursor() as cursor:
-                # Insert branch
-                cursor.execute(
-                    'INSERT INTO branch (name, location) VALUES (%s, %s)',
-                    (name, location)
-                )
-                branch_id = cursor.lastrowid
-                
-                # Generate QR code
-                qr = qrcode.QRCode(version=1, box_size=10, border=5)
-                feedback_url = url_for('feedback', branch_id=branch_id, _external=True)
-                print(f"Generating QR code for URL: {feedback_url}")  # Debug info
-                
-                qr.add_data(feedback_url)
-                qr.make(fit=True)
-                
-                img = qr.make_image(fill_color="black", back_color="white")
-                qr_path = f"qr_codes/{branch_id}.png"
-                full_path = os.path.join('static', qr_path)
-                
-                print(f"Saving QR code to: {full_path}")  # Debug info
-                print(f"Directory exists: {os.path.exists(os.path.dirname(full_path))}")  # Debug info
-                print(f"Directory is writable: {os.access(os.path.dirname(full_path), os.W_OK)}")  # Debug info
-                
-                # Ensure the directory exists
-                os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                
-                # Save the image
-                try:
-                    img.save(full_path)
-                    print(f"QR code saved successfully to {full_path}")  # Debug info
-                    print(f"File exists after save: {os.path.exists(full_path)}")  # Debug info
-                    print(f"File size: {os.path.getsize(full_path)} bytes")  # Debug info
-                except Exception as e:
-                    print(f"Error saving QR code: {str(e)}")  # Debug info
-                    print(f"Current working directory: {os.getcwd()}")  # Debug info
-                    flash('QR კოდის შენახვა ვერ მოხერხდა', 'error')
-                    return redirect(url_for('admin'))
-                
-                # Update branch with QR code path
-                cursor.execute(
-                    'UPDATE branch SET qr_code_path = %s WHERE id = %s',
-                    (qr_path, branch_id)
-                )
-                conn.commit()
-                
-                flash('ფილიალი წარმატებით დაემატა', 'success')
-                return redirect(url_for('admin'))
-        finally:
-            conn.close()
+        cur = conn.cursor()
+        cur.execute('INSERT INTO branches (name, location) VALUES (%s, %s) RETURNING id', (name, location))
+        branch_id = cur.fetchone()[0]
+        conn.commit()
+        cur.close()
+        conn.close()
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(f"{request.host_url}feedback/{branch_id}")
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        # Save QR code
+        qr_code_path = os.path.join('static', 'qr_codes', f'{branch_id}.png')
+        os.makedirs(os.path.dirname(qr_code_path), exist_ok=True)
+        img.save(qr_code_path)
+        
+        flash('ფილიალი წარმატებით დაემატა', 'success')
+        return redirect(url_for('admin'))
     
     return render_template('admin/add_branch.html')
 
@@ -272,101 +228,106 @@ def add_branch():
 @admin_required
 def delete_branch(branch_id):
     conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            # Get QR code path before deleting
-            cursor.execute('SELECT qr_code_path FROM branch WHERE id = %s', (branch_id,))
-            branch = cursor.fetchone()
-            
-            if branch and branch['qr_code_path']:
-                # Delete QR code file
-                qr_path = os.path.join('static', branch['qr_code_path'])
-                if os.path.exists(qr_path):
-                    os.remove(qr_path)
-            
-            # Delete branch and related feedback
-            cursor.execute('DELETE FROM feedback WHERE branch_id = %s', (branch_id,))
-            cursor.execute('DELETE FROM branch WHERE id = %s', (branch_id,))
-            conn.commit()
-            
-            flash('ფილიალი წარმატებით წაიშალა', 'success')
-    except Exception as e:
-        print(f"Error deleting branch: {str(e)}")
-        flash('ფილიალის წაშლა ვერ მოხერხდა', 'error')
-    finally:
-        conn.close()
+    cur = conn.cursor()
     
+    # Delete branch
+    cur.execute('DELETE FROM branches WHERE id = %s', (branch_id,))
+    conn.commit()
+    
+    # Delete associated feedback
+    cur.execute('DELETE FROM feedback WHERE branch_id = %s', (branch_id,))
+    conn.commit()
+    
+    cur.close()
+    conn.close()
+    
+    # Delete QR code file
+    qr_code_path = os.path.join('static', 'qr_codes', f'{branch_id}.png')
+    if os.path.exists(qr_code_path):
+        os.remove(qr_code_path)
+    
+    flash('ფილიალი წარმატებით წაიშალა', 'success')
     return redirect(url_for('admin'))
 
 @app.route('/admin/feedback/<int:branch_id>')
 @admin_required
 def view_feedback(branch_id):
     conn = get_db_connection()
-    try:
-        with conn.cursor() as cursor:
-            # Get branch information
-            cursor.execute('SELECT * FROM branch WHERE id = %s', (branch_id,))
-            branch = cursor.fetchone()
-            
-            if not branch:
-                flash('ფილიალი ვერ მოიძებნა', 'error')
-                return redirect(url_for('admin'))
-            
-            # Get feedback statistics
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total_feedback,
-                    
-                    -- Average ratings
-                    AVG(service_rating) as avg_service_rating,
-                    AVG(cleanliness_rating) as avg_cleanliness_rating,
-                    AVG(staff_rating) as avg_staff_rating,
-                    AVG(waiting_time_rating) as avg_waiting_time_rating,
-                    AVG(overall_rating) as avg_overall_rating,
-                    
-                    -- Rating categories count
-                    COUNT(CASE WHEN overall_rating <= 6 THEN 1 END) as negative_count,
-                    COUNT(CASE WHEN overall_rating BETWEEN 7 AND 8 THEN 1 END) as neutral_count,
-                    COUNT(CASE WHEN overall_rating >= 9 THEN 1 END) as positive_count,
-                    
-                    -- Service rating distribution
-                    COUNT(CASE WHEN service_rating <= 6 THEN 1 END) as service_negative,
-                    COUNT(CASE WHEN service_rating BETWEEN 7 AND 8 THEN 1 END) as service_neutral,
-                    COUNT(CASE WHEN service_rating >= 9 THEN 1 END) as service_positive,
-                    
-                    -- Cleanliness rating distribution
-                    COUNT(CASE WHEN cleanliness_rating <= 6 THEN 1 END) as cleanliness_negative,
-                    COUNT(CASE WHEN cleanliness_rating BETWEEN 7 AND 8 THEN 1 END) as cleanliness_neutral,
-                    COUNT(CASE WHEN cleanliness_rating >= 9 THEN 1 END) as cleanliness_positive,
-                    
-                    -- Staff rating distribution
-                    COUNT(CASE WHEN staff_rating <= 6 THEN 1 END) as staff_negative,
-                    COUNT(CASE WHEN staff_rating BETWEEN 7 AND 8 THEN 1 END) as staff_neutral,
-                    COUNT(CASE WHEN staff_rating >= 9 THEN 1 END) as staff_positive,
-                    
-                    -- Waiting time rating distribution
-                    COUNT(CASE WHEN waiting_time_rating <= 6 THEN 1 END) as waiting_negative,
-                    COUNT(CASE WHEN waiting_time_rating BETWEEN 7 AND 8 THEN 1 END) as waiting_neutral,
-                    COUNT(CASE WHEN waiting_time_rating >= 9 THEN 1 END) as waiting_positive
-                FROM feedback 
-                WHERE branch_id = %s
-            ''', (branch_id,))
-            stats = cursor.fetchone()
-            
-            # Get feedback comments
-            cursor.execute('''
-                SELECT * FROM feedback 
-                WHERE branch_id = %s 
-                ORDER BY created_at DESC
-            ''', (branch_id,))
-            feedbacks = cursor.fetchall()
-            
-            return render_template('admin/feedback.html',
-                                branch=branch,
-                                feedbacks=feedbacks,
-                                stats=stats)
-    finally:
-        conn.close()
+    cur = conn.cursor()
+    
+    # Get branch name
+    cur.execute('SELECT name FROM branches WHERE id = %s', (branch_id,))
+    branch = cur.fetchone()
+    
+    # Get feedback data
+    cur.execute('''
+        SELECT 
+            service_rating,
+            cleanliness_rating,
+            staff_rating,
+            waiting_time_rating,
+            overall_rating,
+            comment,
+            created_at
+        FROM feedback 
+        WHERE branch_id = %s 
+        ORDER BY created_at DESC
+    ''', (branch_id,))
+    feedback_data = cur.fetchall()
+    
+    # Calculate statistics
+    cur.execute('''
+        SELECT 
+            AVG(service_rating) as avg_service,
+            AVG(cleanliness_rating) as avg_cleanliness,
+            AVG(staff_rating) as avg_staff,
+            AVG(waiting_time_rating) as avg_waiting,
+            AVG(overall_rating) as avg_overall,
+            COUNT(*) as total_feedback
+        FROM feedback 
+        WHERE branch_id = %s
+    ''', (branch_id,))
+    stats = cur.fetchone()
+    
+    cur.close()
+    conn.close()
+    
+    return render_template('view_feedback.html', 
+                         branch=branch,
+                         feedback_data=feedback_data,
+                         stats=stats)
+
+@app.route('/admin/create', methods=['GET', 'POST'])
+def create_admin():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        confirm_password = request.form.get('confirm_password')
+        
+        if password != confirm_password:
+            flash('პაროლები არ ემთხვევა ერთმანეთს', 'error')
+            return render_template('admin/create_admin.html')
+        
+        # Hash password
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        try:
+            cur.execute('INSERT INTO users (username, password, is_admin) VALUES (%s, %s, %s)',
+                       (username, password_hash, True))
+            conn.commit()
+            flash('ადმინისტრატორი წარმატებით შეიქმნა', 'success')
+            return redirect(url_for('login'))
+        except psycopg2.IntegrityError:
+            flash('მომხმარებელი ამ სახელით უკვე არსებობს', 'error')
+        finally:
+            cur.close()
+            conn.close()
+    
+    return render_template('admin/create_admin.html')
 
 if __name__ == '__main__':
-    app.run(debug=True) 
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port) 
